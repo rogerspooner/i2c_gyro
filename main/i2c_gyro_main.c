@@ -34,9 +34,13 @@ static const char *TAG = "i2c-simple-example";
 
 #define MPU6050_GYRO_DEVICE_ADDR     0x68        /*!< Slave address of the MPU9250 sensor */
 #define MPU6050_ACCEL_XOUT_REG  0x3B        /*!< Register address to read accelerometer X-axis output */
+#define MPU6050_ACCEL_YOUT_REG  0x3D        /*!< Register address to read accelerometer X-axis output */
+#define MPU6050_ACCEL_ZOUT_REG  0x3F        /*!< Register address to read accelerometer X-axis output */
 #define MPU6050_TEMPERATURE_REG 0x41        /*!< Register address to read temperature output */
 
+#define RED_LED_GPIO 4
 #define GREEN_LED_GPIO 5
+#define YELLOW_LED_GPIO 2
 
 /**
  * @brief Read a sequence of bytes from a MPU9250 sensor registers
@@ -113,6 +117,12 @@ static esp_err_t led_init()
         .gpio_num = GREEN_LED_GPIO
     };
     ledc_channel_config(&cconfig);
+    cconfig.gpio_num = RED_LED_GPIO;
+    cconfig.channel = LEDC_CHANNEL_1;
+    ledc_channel_config(&cconfig);
+    cconfig.gpio_num = YELLOW_LED_GPIO;
+    cconfig.channel = LEDC_CHANNEL_2;
+    ledc_channel_config(&cconfig);
     ledc_timer_config_t tconfig = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = LEDC_TIMER_12_BIT,
@@ -121,6 +131,10 @@ static esp_err_t led_init()
         .clk_cfg = LEDC_AUTO_CLK
     };
     ledc_timer_config(&tconfig);
+    tconfig.timer_num = LEDC_TIMER_1;
+    ledc_timer_config(&tconfig);
+    tconfig.timer_num = LEDC_TIMER_2;
+    ledc_timer_config(&tconfig);
     ledc_set_freq(LEDC_LOW_SPEED_MODE, LEDC_TIMER_0, 1000); // 1kHz
     return ESP_OK;
 }
@@ -128,11 +142,12 @@ static esp_err_t led_init()
 void app_main(void)
 {
     esp_err_t err;
-    uint16_t uvalue;
-    int16_t *psvalue = (void*)&uvalue;
+    int16_t valueY, valueX, valueZ;
     int sampleCounter = 0;
-    int maxAccel = -(1<<30), minAccel = (1<<30);
-    int duty = 0;
+    int maxAccelX = -(1<<30), minAccelX = (1<<30);
+    int maxAccelY = -(1<<30), minAccelY = (1<<30);
+    int maxAccelZ = -(1<<30), minAccelZ = (1<<30);
+    int dutyX=0, dutyY=0, dutyZ=0;
     err = i2c_master_init();
     if (err) { ESP_LOGE(TAG, "i2c_master_init failed"); return; }
     mpu6050_init(0x01); /* enable accelerometer */
@@ -148,17 +163,34 @@ void app_main(void)
     while (true) // should use button to change mode.
     { 
         /* Read the MP6050  X-axis acceleration register, which is 16 bits*/
-        err = mpu6050_register_read_16bit(MPU6050_ACCEL_XOUT_REG, &uvalue);
-        if (*psvalue < minAccel) minAccel = *psvalue;
-        if (*psvalue > maxAccel) maxAccel = *psvalue;
+        err = mpu6050_register_read_16bit(MPU6050_ACCEL_XOUT_REG, (uint16_t*)&valueX);
+        err |= mpu6050_register_read_16bit(MPU6050_ACCEL_YOUT_REG, (uint16_t*)&valueY);
+        err |= mpu6050_register_read_16bit(MPU6050_ACCEL_ZOUT_REG, (uint16_t*)&valueZ);
+        if (err) { ESP_LOGE(TAG, "Error around mpu6050_register_read_16bit might be x%x",err); return; }
+        if (valueX < minAccelX) minAccelX = valueX;
+        if (valueX > maxAccelX) maxAccelX = valueX;
+        if (valueY < minAccelY) minAccelY = valueY;
+        if (valueY > maxAccelY) maxAccelY = valueY;
+        if (valueZ < minAccelZ) minAccelZ = valueZ;
+        if (valueZ > maxAccelZ) maxAccelZ = valueZ;
         if (sampleCounter-- <= 0)
-        { ESP_LOGI(TAG,"Accel Y   = %04x %8d max=%d min=%d duty=%d", (unsigned int)uvalue, (int)*psvalue,maxAccel,minAccel,duty);
+        { ESP_LOGI(TAG,"Accel Y   = %04x %8d max=%d min=%d duty=%d", (unsigned int)valueY, valueY,maxAccelY,minAccelY,dutyY);
           sampleCounter = 20;
         }
-        if (maxAccel > minAccel) // avoid divide by zero (or negative
-        { duty = (*psvalue - minAccel) * (1<<LEDC_TIMER_12_BIT) / (maxAccel - minAccel);
-          ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, duty); // expect 12 bit range
+        if (maxAccelX > minAccelX) // avoid divide by zero (or negative
+        { dutyX = (valueX - minAccelX) * (1<<LEDC_TIMER_12_BIT) / (maxAccelX - minAccelX);
+          ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, dutyX); // expect 12 bit range
           ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+        }
+        if (maxAccelY > minAccelY) // avoid divide by zero (or negative
+        { dutyY = (valueY - minAccelY) * (1<<LEDC_TIMER_12_BIT) / (maxAccelY - minAccelY);
+          ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, dutyY); // expect 12 bit range
+          ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
+        }
+        if (maxAccelZ > minAccelZ) // avoid divide by zero (or negative
+        { dutyZ = (valueZ - minAccelZ) * (1<<LEDC_TIMER_12_BIT) / (maxAccelZ - minAccelZ);
+          ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2, dutyZ); // expect 12 bit range
+          ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_2);
         }
         /*
         err = mpu6050_register_read_16bit(MPU6050_TEMPERATURE_REG, &value);
